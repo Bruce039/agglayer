@@ -287,7 +287,7 @@ where
             .get::<CertificatePerIndexProtoColumn>(&certificate_index)?
             .ok_or_else(|| {
                 Error::Unexpected(format!(
-                    "Certificate {certificate_id} is assigned to epoch {} at index                      {certificate_index}, but the epoch certificate row is missing",
+                    "Certificate {certificate_id} is assigned to epoch {} at index {certificate_index}, but the epoch certificate row is missing",
                     self.epoch_number
                 ))
             })?;
@@ -297,7 +297,7 @@ where
             || certificate.height != height
         {
             return Err(Error::Unexpected(format!(
-                "Certificate {certificate_id} does not match the epoch row at index                  {certificate_index}"
+                "Certificate {certificate_id} does not match the epoch row at index {certificate_index}"
             )));
         }
 
@@ -307,7 +307,7 @@ where
             .is_none()
         {
             return Err(Error::Unexpected(format!(
-                "Certificate {certificate_id} is persisted at epoch index {certificate_index},                  but its proof is missing"
+                "Certificate {certificate_id} is persisted at epoch index {certificate_index}, but its proof is missing"
             )));
         }
 
@@ -408,7 +408,7 @@ where
                 }
                 (Some(epoch_number), Some(certificate_index)) => {
                     return Err(Error::UnprocessedAction(format!(
-                        "Certificate {certificate_id} is already assigned to epoch {epoch_number}                          at index {certificate_index}"
+                        "Certificate {certificate_id} is already assigned to epoch {epoch_number} at index {certificate_index}"
                     )));
                 }
                 (Some(_), None) | (None, Some(_)) => {
