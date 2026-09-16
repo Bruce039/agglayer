@@ -255,7 +255,7 @@ impl<PendingStore, StateStore> PerEpochStore<PendingStore, StateStore> {
 
 impl<PendingStore, StateStore> PerEpochStore<PendingStore, StateStore>
 where
-    PendingStore: PendingCertificateWriter,
+    PendingStore: PendingCertificateReader + PendingCertificateWriter,
     StateStore: StateWriter,
 {
     fn find_persisted_certificate_index(
@@ -337,13 +337,42 @@ where
             )?;
         }
 
-        // Both deletes are idempotent, so a retry can safely complete cleanup
-        // after a crash at either point.
-        self.pending_store.remove_generated_proof(&certificate_id)?;
-        self.pending_store
-            .remove_pending_certificate(network_id, height)?;
+        self.cleanup_pending_certificate(certificate_id, network_id, height)?;
 
         Ok((*self.epoch_number, certificate_index))
+    }
+
+    fn cleanup_pending_certificate(
+        &self,
+        certificate_id: CertificateId,
+        network_id: NetworkId,
+        height: Height,
+    ) -> Result<(), Error> {
+        // The proof is keyed by certificate id, so deleting it is safe and
+        // idempotent even if the retry happens after it was already removed.
+        self.pending_store.remove_generated_proof(&certificate_id)?;
+
+        // The pending body is keyed only by network + height. Avoid deleting a
+        // different certificate that may have replaced this row while the
+        // settled transition was being completed.
+        if let Some(pending_certificate) =
+            self.pending_store.get_certificate(network_id, height)?
+        {
+            if pending_certificate.hash() == certificate_id {
+                self.pending_store
+                    .remove_pending_certificate(network_id, height)?;
+            } else {
+                warn!(
+                    %certificate_id,
+                    %network_id,
+                    %height,
+                    pending_certificate_id = %pending_certificate.hash(),
+                    "Pending row was replaced while completing epoch assignment; leaving it intact"
+                );
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -625,10 +654,8 @@ where
         )?;
         debug!("Certificate assigned to epoch");
 
-        self.pending_store.remove_generated_proof(&certificate_id)?;
-        self.pending_store
-            .remove_pending_certificate(network_id, height)?;
-        debug!("Certificate and proof removed from pending store");
+        self.cleanup_pending_certificate(certificate_id, network_id, height)?;
+        debug!("Certificate and proof cleaned up from pending store");
 
         drop(lock);
 
