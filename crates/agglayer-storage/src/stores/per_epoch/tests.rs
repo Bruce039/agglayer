@@ -6,7 +6,8 @@ use std::{
 
 use agglayer_config::Config;
 use agglayer_types::{
-    Certificate, CertificateIndex, CertificateStatus, EpochNumber, Height, NetworkId, Proof,
+    Certificate, CertificateIndex, CertificateStatus, EpochNumber, Height, Metadata, NetworkId,
+    Proof,
 };
 use parking_lot::RwLock;
 use pessimistic_proof_test_suite::sample_data;
@@ -314,6 +315,67 @@ fn add_certificate_finishes_pending_cleanup_after_restart() {
         .get_certificate_at_index(CertificateIndex::new(1))
         .unwrap()
         .is_none());
+}
+
+#[test]
+fn recovered_cleanup_does_not_delete_replaced_pending_certificate() {
+    let tmp = TempDBDir::new();
+    let config = Arc::new(Config::new(&tmp.path));
+    let pending_store =
+        Arc::new(PendingStore::new_with_path(&config.storage.pending_db_path).unwrap());
+    let state_store = Arc::new(
+        StateStore::new_with_path(&config.storage.state_db_path, BackupClient::noop()).unwrap(),
+    );
+    let store = PerEpochStore::try_open(
+        config,
+        EpochNumber::ZERO,
+        pending_store.clone(),
+        state_store.clone(),
+        None,
+        BackupClient::noop(),
+    )
+    .unwrap();
+
+    let certificate = Certificate::new_for_test(NetworkId::new(1), Height::ZERO);
+    let certificate_id = certificate.hash();
+    let proof = Proof::dummy();
+    let index = CertificateIndex::ZERO;
+
+    state_store
+        .insert_certificate_header(&certificate, CertificateStatus::Proven)
+        .unwrap();
+    pending_store
+        .insert_pending_certificate(certificate.network_id, certificate.height, &certificate)
+        .unwrap();
+    pending_store
+        .insert_generated_proof(&certificate_id, &proof)
+        .unwrap();
+
+    persist_epoch_phase(&store, &certificate, &proof, index);
+    state_store
+        .assign_certificate_to_epoch(&certificate_id, &EpochNumber::ZERO, &index)
+        .unwrap();
+
+    let mut replacement = Certificate::new_for_test(certificate.network_id, certificate.height);
+    replacement.metadata = Metadata::new([1; 32].into());
+    assert_ne!(replacement.hash(), certificate_id);
+    pending_store
+        .insert_pending_certificate(replacement.network_id, replacement.height, &replacement)
+        .unwrap();
+
+    assert_eq!(
+        store
+            .add_certificate(certificate_id, agglayer_types::ExecutionMode::Default)
+            .unwrap(),
+        (EpochNumber::ZERO, index)
+    );
+
+    assert_eq!(
+        pending_store
+            .get_certificate(replacement.network_id, replacement.height)
+            .unwrap(),
+        Some(replacement)
+    );
 }
 
 #[rstest]
