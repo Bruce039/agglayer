@@ -11,8 +11,8 @@ use agglayer_types::{
 use parking_lot::RwLock;
 use pessimistic_proof_test_suite::sample_data;
 use prost::Message as _;
-use rstest::{fixture, rstest};
 use rocksdb::WriteBatch;
+use rstest::{fixture, rstest};
 use tracing::info;
 
 use crate::{
