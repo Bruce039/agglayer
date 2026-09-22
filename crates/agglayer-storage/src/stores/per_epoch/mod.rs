@@ -407,9 +407,13 @@ where
     ) -> Result<(EpochNumber, CertificateIndex), Error> {
         let lock = self.lock_for_adding_certificate();
 
-        if *lock {
-            Err(Error::AlreadyPacked(*self.epoch_number))?;
-        }
+        // A packed epoch accepts no new certificate, but a certificate whose
+        // epoch-local rows are already committed still has to be able to
+        // finish its state assignment and pending cleanup: packing can start
+        // between the failed attempt and the retry, and those two steps write
+        // outside this epoch's database. Recovery is therefore decided first
+        // and the rejection is raised just before the first new write.
+        let epoch_packed = *lock;
 
         let certificate_header = self
             .state_store
@@ -479,6 +483,12 @@ where
                     true,
                 );
             }
+        }
+
+        // Past this point the certificate would be written into the epoch for
+        // the first time, which a packed epoch must refuse.
+        if epoch_packed {
+            return Err(Error::AlreadyPacked(*self.epoch_number));
         }
 
         let certificate = self

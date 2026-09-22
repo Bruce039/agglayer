@@ -248,6 +248,95 @@ fn add_certificate_recovers_committed_epoch_phase_after_restart() {
 }
 
 #[test]
+fn add_certificate_recovers_committed_epoch_phase_on_a_packed_epoch() {
+    let tmp = TempDBDir::new();
+    let config = Arc::new(Config::new(&tmp.path));
+    let pending_store =
+        Arc::new(PendingStore::new_with_path(&config.storage.pending_db_path).unwrap());
+    let state_store = Arc::new(
+        StateStore::new_with_path(&config.storage.state_db_path, BackupClient::noop()).unwrap(),
+    );
+    let store = PerEpochStore::try_open(
+        config.clone(),
+        EpochNumber::ZERO,
+        pending_store.clone(),
+        state_store.clone(),
+        None,
+        BackupClient::noop(),
+    )
+    .unwrap();
+
+    let certificate = Certificate::new_for_test(NetworkId::new(1), Height::ZERO);
+    let certificate_id = certificate.hash();
+    let proof = Proof::dummy();
+
+    state_store
+        .insert_certificate_header(&certificate, CertificateStatus::Proven)
+        .unwrap();
+    pending_store
+        .insert_pending_certificate(certificate.network_id, certificate.height, &certificate)
+        .unwrap();
+    pending_store
+        .insert_generated_proof(&certificate_id, &proof)
+        .unwrap();
+
+    persist_epoch_phase(&store, &certificate, &proof, CertificateIndex::ZERO);
+    drop(store);
+
+    let store = PerEpochStore::try_open(
+        config,
+        EpochNumber::ZERO,
+        pending_store.clone(),
+        state_store.clone(),
+        None,
+        BackupClient::noop(),
+    )
+    .unwrap();
+
+    // Packing can start between the failed attempt and the retry. The epoch
+    // rows are already committed here, so the retry has to be able to finish
+    // the state assignment and the pending cleanup that live outside them.
+    store.start_packing().unwrap();
+
+    assert_eq!(
+        store
+            .add_certificate(certificate_id, agglayer_types::ExecutionMode::Default)
+            .unwrap(),
+        (EpochNumber::ZERO, CertificateIndex::ZERO)
+    );
+
+    let header = state_store
+        .get_certificate_header(&certificate_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(header.epoch_number, Some(EpochNumber::ZERO));
+    assert_eq!(header.certificate_index, Some(CertificateIndex::ZERO));
+    assert_eq!(header.status, CertificateStatus::Settled);
+    assert!(pending_store
+        .get_certificate(certificate.network_id, certificate.height)
+        .unwrap()
+        .is_none());
+
+    // A certificate without committed epoch rows is still refused.
+    let fresh = Certificate::new_for_test(NetworkId::new(2), Height::ZERO);
+    let fresh_id = fresh.hash();
+    state_store
+        .insert_certificate_header(&fresh, CertificateStatus::Proven)
+        .unwrap();
+    pending_store
+        .insert_pending_certificate(fresh.network_id, fresh.height, &fresh)
+        .unwrap();
+    pending_store
+        .insert_generated_proof(&fresh_id, &Proof::dummy())
+        .unwrap();
+
+    assert!(matches!(
+        store.add_certificate(fresh_id, agglayer_types::ExecutionMode::Default),
+        Err(Error::AlreadyPacked(epoch)) if epoch == EpochNumber::ZERO
+    ));
+}
+
+#[test]
 fn add_certificate_finishes_pending_cleanup_after_restart() {
     let tmp = TempDBDir::new();
     let config = Arc::new(Config::new(&tmp.path));
